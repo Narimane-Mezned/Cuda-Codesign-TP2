@@ -4,14 +4,13 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
-#define INPUT_SIZE  67108864
+#define INPUT_SIZE  8192
 #define HIDDEN_SIZE 8192
 #define BLOCK_SIZE  256
-#define REPEATS     100
+#define REPEATS     10000
 
 
 // KERNEL 1 : Naive reduction
-
 __global__ void sumReductionNaive(float* input, float* output, int n) {
     __shared__ float sharedData[BLOCK_SIZE];
 
