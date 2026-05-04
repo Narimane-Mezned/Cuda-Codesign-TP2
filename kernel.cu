@@ -9,37 +9,37 @@ using std::cout;
 using std::generate;
 using std::vector;
 
-__global__ void matrixMulXrow(const float* a, const float* b, float* c, int N) {
+__global__ void matrixMulXrow(const int* a, const int* b, int* c, int N) {
     int row = blockIdx.x * blockDim.x + threadIdx.x;
     int col = blockIdx.y * blockDim.y + threadIdx.y;
     if (row >= N || col >= N) return;
-    float tmp = 0;
+    int tmp = 0;
     for (int k = 0; k < N; k++) tmp += a[row * N + k] * b[k * N + col];
     c[row * N + col] = tmp;
 }
 
-__global__ void matrixMulYrow(const float* a, const float* b, float* c, int N) {
+__global__ void matrixMulYrow(const int* a, const int* b, int* c, int N) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     if (row >= N || col >= N) return;
-    float tmp = 0;
+    int tmp = 0;
     for (int k = 0; k < N; k++) tmp += a[row * N + k] * b[k * N + col];
     c[row * N + col] = tmp;
 }
 
 int main() {
     int N = 8192;
-    size_t bytes = N * N * sizeof(float);
+    size_t bytes = N * N * sizeof(int);
     float Nbr_GFLOPS = 2.0f * N / 1000.0f * N / 1000.0f * N / 1000.0f;
 
-    vector<float> h_a(N * N), h_b(N * N), h_c(N * N);
-    generate(h_a.begin(), h_a.end(), []() { return (float)(rand() % 100); });
-    generate(h_b.begin(), h_b.end(), []() { return (float)(rand() % 100); });
+    vector<int> h_a(N * N), h_b(N * N), h_c(N * N);
+    generate(h_a.begin(), h_a.end(), []() { return rand() % 100; });
+    generate(h_b.begin(), h_b.end(), []() { return rand() % 100; });
 
     cout << "Step1 : h_a and h_b generation\n";
     cout << "Step2 : Mem Allocation on host\n";
 
-    float* d_a, * d_b, * d_c;
+    int* d_a, * d_b, * d_c;
     cudaMalloc(&d_a, bytes);
     cudaMalloc(&d_b, bytes);
     cudaMalloc(&d_c, bytes);
@@ -54,7 +54,6 @@ int main() {
 
     float Host2Dev_time, Kernel_time, Dev2Host_time;
 
-    // Mesure Host -> Device
     cout << "Step3 : Copy Data To Device\n";
     cudaEventRecord(e1);
     cudaMemcpy(d_a, h_a.data(), bytes, cudaMemcpyHostToDevice);
@@ -68,15 +67,13 @@ int main() {
     dim3 threads(THREADS, THREADS);
     dim3 blocks(BLOCKS, BLOCKS);
 
-    // Mesure Kernel
-    // Pour Part 1 : changer matrixMulXrow en matrixMulYrow pour le 2eme test
+   
     cudaEventRecord(e2);
-    matrixMulYrow << <blocks, threads >> > (d_a, d_b, d_c, N);
+    matrixMulXrow << <blocks, threads >> > (d_a, d_b, d_c, N);
     cudaEventRecord(e3);
     cudaEventSynchronize(e3);
     cudaEventElapsedTime(&Kernel_time, e2, e3);
 
-    // Mesure Device -> Host
     cudaEventRecord(e3);
     cudaMemcpy(h_c.data(), d_c, bytes, cudaMemcpyDeviceToHost);
     cudaEventRecord(e4);
