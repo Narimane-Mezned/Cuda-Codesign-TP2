@@ -1,180 +1,119 @@
-// This program computes a simple version of matrix multiplication
-
 #include <algorithm>
-#include <cassert>
 #include <cstdlib>
-#include <functional>
 #include <iostream>
 #include <vector>
+#include "cuda_runtime.h"
+#include "device_launch_parameters.h"
+#include "cublas_v2.h"
 
 using std::cout;
 using std::generate;
 using std::vector;
 
 
-/* =========================================================================== */
+// Naive kernel (reference)
 
 __global__ void matrixMulXrow(const float* a, const float* b, float* c, int N) {
-	// Compute each thread's global row and column index
-	int row = blockIdx.x * blockDim.x + threadIdx.x;
-	int col = blockIdx.y * blockDim.y + threadIdx.y;
-
-	float tmp = 0;
-	// Iterate over row, and down column
-	for (int k = 0; k < N; k++) {
-		// Accumulate results for a single element
-		tmp += a[row * N + k] * b[k * N + col];
-	}
-	c[row * N + col] = tmp;
-
-}
-
-/* =========================================================================== */
-
-__global__ void matrixMulYrow(const float* a, const float* b, float* c, int N) {
-	// Compute each thread's global row and column index
-	int row = blockIdx.y * blockDim.y + threadIdx.y;
-	int col = blockIdx.x * blockDim.x + threadIdx.x;
-
-	float tmp = 0;
-	// Iterate over row, and down column
-	for (int k = 0; k < N; k++) {
-		// Accumulate results for a single element
-		tmp += a[row * N + k] * b[k * N + col];
-	}
-	c[row * N + col] = tmp;
-}
-
-/* =========================================================================== */
-
-// Check result on the CPU
-void verify_result(vector<float>& a, vector<float>& b, vector<float>& c, int N) {
-	// For every row...
-	for (int i = 0; i < N; i++) {
-		// For every column...
-		for (int j = 0; j < N; j++) {
-			// For every element in the row-column pair
-			int tmp = 0;
-			for (int k = 0; k < N; k++) {
-				// Accumulate the partial results
-				tmp += a[i * N + k] * b[k * N + j];
-			}
-
-			// Check against the CPU result
-			assert(tmp == c[i * N + j]);
-		}
-	}
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    int col = blockIdx.y * blockDim.y + threadIdx.y;
+    if (row >= N || col >= N) return;
+    float tmp = 0;
+    for (int k = 0; k < N; k++) tmp += a[row * N + k] * b[k * N + col];
+    c[row * N + col] = tmp;
 }
 
 int main() {
-	// Matrix size of N x N;
-	int N = 8192;
+    int N = 8192;
+    size_t bytes = N * N * sizeof(float);
+    float Nbr_GFLOPS = 2.0f * N / 1000.0f * N / 1000.0f * N / 1000.0f;
 
-	// Size (in bytes) of matrix
-	size_t bytes = N * N * sizeof(float);
+    vector<float> h_a(N * N), h_b(N * N), h_c(N * N);
+    generate(h_a.begin(), h_a.end(), []() { return (float)(rand() % 100); });
+    generate(h_b.begin(), h_b.end(), []() { return (float)(rand() % 100); });
 
-	//Nbr of Floating Operations
-	float Nbr_GFLOPS;
-	Nbr_GFLOPS = 2 * N / 1000.0 * N / 1000.0 * N / 1000.0;
+    float* d_a, * d_b, * d_c;
+    cudaMalloc(&d_a, bytes);
+    cudaMalloc(&d_b, bytes);
+    cudaMalloc(&d_c, bytes);
 
-	// Host vectors
-	vector<float> h_a(N * N);
-	vector<float> h_b(N * N);
-	vector<float> h_c(N * N);
+    cudaMemcpy(d_a, h_a.data(), bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_b, h_b.data(), bytes, cudaMemcpyHostToDevice);
 
-	cout << "Step1 : h_a and h_b generation \n";
+    cudaEvent_t e1, e2, e3, e4;
+    cudaEventCreate(&e1);
+    cudaEventCreate(&e2);
+    cudaEventCreate(&e3);
+    cudaEventCreate(&e4);
 
-	// Initialize matrices
-	generate(h_a.begin(), h_a.end(), []() { return rand() % 100; });
-	generate(h_b.begin(), h_b.end(), []() { return rand() % 100; });
+    float Naive_time, cuBLAS_time;
 
-	cout << "Step2 : Mem Allocation on host \n";
-	// Allocate device memory
-	float* d_a, * d_b, * d_c;
-	cudaMalloc(&d_a, bytes);
-	cudaMalloc(&d_b, bytes);
-	cudaMalloc(&d_c, bytes);
+    
+    // Test 1 : Naive kernel (matrixMulXrow)
+    
+    cout << "\n--- Naive Kernel (matrixMulXrow) ---\n";
 
-	cout << "Step3 : Launch Event to measure Time \n";
-	/*--- start to count execution time of GPU version ---*/
-	float Total_gpu_time, Host2Dev_time, Kernel_time, Dev2Host_time;
-	// some events to count the execution time
-	cudaEvent_t start, stop, Host2dev, KernelExec;
+    int THREADS = 32;
+    int BLOCKS = N / THREADS;
+    dim3 threads(THREADS, THREADS);
+    dim3 blocks(BLOCKS, BLOCKS);
 
-	cudaEventCreate(&start);
-	cudaEventCreate(&Host2dev);
-	cudaEventCreate(&KernelExec);
-	cudaEventCreate(&stop);
-	/*--- execution time of GPU version ---*/
+    cudaEventRecord(e1);
+    matrixMulXrow << <blocks, threads >> > (d_a, d_b, d_c, N);
+    cudaEventRecord(e2);
+    cudaEventSynchronize(e2);
+    cudaEventElapsedTime(&Naive_time, e1, e2);
 
-	cudaEventRecord(start, 0);
+    printf("Naive Kernel Time: %f ms\n", Naive_time);
+    printf("Naive Performance: %f GFLOPS\n", Nbr_GFLOPS * 1000.0f / Naive_time);
 
+    
+    // Test 2 : cuBLAS
+    
+    cout << "\n--- cuBLAS ---\n";
 
-	// Copy data to the device
-	cout << "Step3 : Copy Data To Device \n";
-	cudaMemcpy(d_a, h_a.data(), bytes, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_b, h_b.data(), bytes, cudaMemcpyHostToDevice);
+    cublasHandle_t handle;
+    cublasCreate(&handle);
 
-	cudaEventRecord(Host2dev, 0);
+    float alpha = 1.0f;
+    float beta = 0.0f;
 
-	// Threads per CTA dimension
-	int THREADS = 32;
+    // Warm up
+    cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+        N, N, N,
+        &alpha,
+        d_b, N,
+        d_a, N,
+        &beta,
+        d_c, N);
+    cudaDeviceSynchronize();
 
-	// Blocks per grid dimension (assumes THREADS divides N evenly)
-	int BLOCKS = N / THREADS;
+    cudaEventRecord(e3);
+    cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+        N, N, N,
+        &alpha,
+        d_b, N,
+        d_a, N,
+        &beta,
+        d_c, N);
+    cudaEventRecord(e4);
+    cudaEventSynchronize(e4);
+    cudaEventElapsedTime(&cuBLAS_time, e3, e4);
 
-	// Use dim3 structs for block  and grid dimensions
-	dim3 threads(THREADS, THREADS);
-	dim3 blocks(BLOCKS, BLOCKS);
+    printf("cuBLAS Time: %f ms\n", cuBLAS_time);
+    printf("cuBLAS Performance: %f GFLOPS\n", Nbr_GFLOPS * 1000.0f / cuBLAS_time);
 
-	// Launch kernel
-	matrixMulYrow << <blocks, threads >> > (d_a, d_b, d_c, N);
+    
+    // Comparison
+   
+    cout << "\n--- Comparison ---\n";
+    printf("Speedup cuBLAS vs Naive: %f x\n", Naive_time / cuBLAS_time);
 
-	// record time after kernel execution
-	cudaEventRecord(KernelExec, 0);
+    cublasDestroy(handle);
+    cudaFree(d_a);
+    cudaFree(d_b);
+    cudaFree(d_c);
 
-
-	// Copy back to the host
-	cudaMemcpy(h_c.data(), d_c, bytes, cudaMemcpyDeviceToHost);
-
-
-	cudaThreadSynchronize();
-	// time counting terminate
-	cudaEventRecord(stop, 0);
-	cudaEventSynchronize(stop);
-
-	// compute time elapse on GPU computing
-	cudaEventElapsedTime(&Total_gpu_time, start, stop);
-	cudaEventElapsedTime(&Host2Dev_time, start, Host2dev);
-	cudaEventElapsedTime(&Kernel_time, Host2dev, KernelExec);
-	cudaEventElapsedTime(&Dev2Host_time, KernelExec, stop);
-
-
-
-	printf("Time elapsed on Host To Device Transfer: %f ms.\n\n", Host2Dev_time);
-	printf("Time elapsed on matrix multiplication on GPU: %f ms.\n\n", Kernel_time);
-	printf("Time elapsed on Device To Host Transfer: %f ms.\n\n", Dev2Host_time);
-	printf("Total Time: %f ms.\n\n", Total_gpu_time);
-
-
-	float Perf_GFLOPS;
-	Perf_GFLOPS = Nbr_GFLOPS * 1000 / Kernel_time;
-	printf("Kernel Execution Performance: %f GFLOPS.\n\n", Perf_GFLOPS);
-
-
-	// Check result
-	verify_result(h_a, h_b, h_c, N);
-
-	cout << "COMPLETED SUCCESSFULLY\n";
-
-	// Free memory on device
-	cudaFree(d_a);
-	cudaFree(d_b);
-	cudaFree(d_c);
-
-	//wait for keyboard press
-	int kml;
-	scanf("%c", &kml);
-
-	return 0;
+    char kml;
+    scanf("%c", &kml);
+    return 0;
 }
