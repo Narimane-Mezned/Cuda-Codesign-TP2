@@ -71,7 +71,7 @@ int main() {
     // Mesure Kernel
     // Pour Part 1 : changer matrixMulXrow en matrixMulYrow pour le 2eme test
     cudaEventRecord(e2);
-    matrixMulXrow << <blocks, threads >> > (d_a, d_b, d_c, N);
+    matrixMulYrow << <blocks, threads >> > (d_a, d_b, d_c, N);
     cudaEventRecord(e3);
     cudaEventSynchronize(e3);
     cudaEventElapsedTime(&Kernel_time, e2, e3);
